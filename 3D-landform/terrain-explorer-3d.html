@@ -1,0 +1,875 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D地形生成和探索工具</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+        }
+        
+        #canvas-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+        
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 14px;
+            user-select: none;
+        }
+        
+        #controls {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 15px;
+            border-radius: 5px;
+            max-width: 300px;
+        }
+        
+        #controls h3 {
+            margin-top: 0;
+            border-bottom: 1px solid #555;
+            padding-bottom: 5px;
+        }
+        
+        .control-group {
+            margin: 10px 0;
+        }
+        
+        .control-group label {
+            display: inline-block;
+            width: 120px;
+            font-size: 12px;
+        }
+        
+        .control-group input[type="range"] {
+            width: 150px;
+        }
+        
+        .control-group input[type="number"] {
+            width: 60px;
+        }
+        
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 8px 15px;
+            border-radius: 3px;
+            cursor: pointer;
+            margin: 5px 0;
+            width: 100%;
+        }
+        
+        button:hover {
+            background: #45a049;
+        }
+        
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 20px;
+            height: 20px;
+            pointer-events: none;
+        }
+        
+        #crosshair::before,
+        #crosshair::after {
+            content: '';
+            position: absolute;
+            background: rgba(255, 255, 255, 0.8);
+        }
+        
+        #crosshair::before {
+            width: 20px;
+            height: 2px;
+            top: 9px;
+            left: 0;
+        }
+        
+        #crosshair::after {
+            width: 2px;
+            height: 20px;
+            top: 0;
+            left: 9px;
+        }
+        
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 24px;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 20px;
+            border-radius: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container">
+        <div id="loading">正在加载地形...</div>
+        <div id="info">
+            <strong>3D地形探索器</strong><br>
+            移动: WASD<br>
+            跳跃: 空格<br>
+            视角: 鼠标<br>
+            加速: Shift<br>
+            <span id="fps">FPS: 0</span><br>
+            <span id="position">位置: (0, 0, 0)</span>
+        </div>
+        
+        <div id="controls">
+            <h3>地形控制</h3>
+            
+            <div class="control-group">
+                <label>地形种子:</label>
+                <input type="number" id="seed" value="12345" min="0" max="99999">
+            </div>
+            
+            <div class="control-group">
+                <label>地形高度:</label>
+                <input type="range" id="heightScale" min="10" max="200" value="80">
+                <span id="heightValue">80</span>
+            </div>
+            
+            <div class="control-group">
+                <label>地形起伏:</label>
+                <input type="range" id="octaves" min="1" max="8" value="6">
+                <span id="octavesValue">6</span>
+            </div>
+            
+            <div class="control-group">
+                <label>地形精细度:</label>
+                <input type="range" id="resolution" min="64" max="256" step="32" value="128">
+                <span id="resolutionValue">128</span>
+            </div>
+            
+            <button onclick="regenerateTerrain()">重新生成地形</button>
+            
+            <h3>环境设置</h3>
+            
+            <div class="control-group">
+                <label>时间:</label>
+                <input type="range" id="timeOfDay" min="0" max="24" step="0.1" value="12">
+                <span id="timeValue">12:00</span>
+            </div>
+            
+            <div class="control-group">
+                <label>雾浓度:</label>
+                <input type="range" id="fogDensity" min="0" max="0.02" step="0.001" value="0.005">
+                <span id="fogValue">0.005</span>
+            </div>
+            
+            <div class="control-group">
+                <label>植被密度:</label>
+                <input type="range" id="vegetationDensity" min="0" max="100" value="50">
+                <span id="vegetationValue">50</span>
+            </div>
+            
+            <button onclick="toggleWireframe()">切换线框模式</button>
+            <button onclick="exportTerrain()">导出地形数据</button>
+        </div>
+        
+        <div id="crosshair"></div>
+    </div>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        // 全局变量
+        let scene, camera, renderer;
+        let terrain, water;
+        let controls = {};
+        let velocity = new THREE.Vector3();
+        let canJump = false;
+        let prevTime = performance.now();
+        let stats = { fps: 0, frameCount: 0, lastTime: performance.now() };
+        
+        // 地形参数
+        let terrainParams = {
+            seed: 12345,
+            size: 1000,
+            resolution: 128,
+            heightScale: 80,
+            octaves: 6,
+            persistence: 0.5,
+            lacunarity: 2.0
+        };
+        
+        // 环境参数
+        let environmentParams = {
+            timeOfDay: 12,
+            fogDensity: 0.005,
+            vegetationDensity: 50
+        };
+        
+        // 植被对象
+        let vegetation = [];
+        
+        // Perlin噪声实现
+        class PerlinNoise {
+            constructor(seed) {
+                this.seed = seed;
+                this.p = this.generatePermutation();
+            }
+            
+            generatePermutation() {
+                const p = [];
+                for (let i = 0; i < 256; i++) {
+                    p[i] = i;
+                }
+                
+                // 使用种子打乱数组
+                let n = this.seed;
+                for (let i = 255; i > 0; i--) {
+                    n = (n * 9301 + 49297) % 233280;
+                    const j = Math.floor((n / 233280) * (i + 1));
+                    [p[i], p[j]] = [p[j], p[i]];
+                }
+                
+                // 复制数组以避免边界问题
+                for (let i = 0; i < 256; i++) {
+                    p[256 + i] = p[i];
+                }
+                
+                return p;
+            }
+            
+            fade(t) {
+                return t * t * t * (t * (t * 6 - 15) + 10);
+            }
+            
+            lerp(t, a, b) {
+                return a + t * (b - a);
+            }
+            
+            grad(hash, x, y) {
+                const h = hash & 3;
+                const u = h < 2 ? x : y;
+                const v = h < 2 ? y : x;
+                return ((h & 1) === 0 ? u : -u) + ((h & 2) === 0 ? v : -v);
+            }
+            
+            noise(x, y) {
+                const X = Math.floor(x) & 255;
+                const Y = Math.floor(y) & 255;
+                
+                x -= Math.floor(x);
+                y -= Math.floor(y);
+                
+                const u = this.fade(x);
+                const v = this.fade(y);
+                
+                const a = this.p[X] + Y;
+                const aa = this.p[a];
+                const ab = this.p[a + 1];
+                const b = this.p[X + 1] + Y;
+                const ba = this.p[b];
+                const bb = this.p[b + 1];
+                
+                return this.lerp(v,
+                    this.lerp(u, this.grad(this.p[aa], x, y), this.grad(this.p[ba], x - 1, y)),
+                    this.lerp(u, this.grad(this.p[ab], x, y - 1), this.grad(this.p[bb], x - 1, y - 1))
+                );
+            }
+            
+            octaveNoise(x, y, octaves, persistence, lacunarity) {
+                let total = 0;
+                let frequency = 1;
+                let amplitude = 1;
+                let maxValue = 0;
+                
+                for (let i = 0; i < octaves; i++) {
+                    total += this.noise(x * frequency, y * frequency) * amplitude;
+                    maxValue += amplitude;
+                    amplitude *= persistence;
+                    frequency *= lacunarity;
+                }
+                
+                return total / maxValue;
+            }
+        }
+        
+        // 初始化场景
+        function init() {
+            // 创建场景
+            scene = new THREE.Scene();
+            scene.fog = new THREE.Fog(0x87CEEB, 100, 1000);
+            
+            // 创建相机
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000);
+            camera.position.set(0, 100, 0);
+            
+            // 创建渲染器
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.getElementById('canvas-container').appendChild(renderer.domElement);
+            
+            // 添加光照
+            setupLighting();
+            
+            // 创建天空盒
+            createSkybox();
+            
+            // 生成地形
+            generateTerrain();
+            
+            // 创建水面
+            createWater();
+            
+            // 生成植被
+            generateVegetation();
+            
+            // 设置控制
+            setupControls();
+            
+            // 绑定UI事件
+            setupUI();
+            
+            // 隐藏加载提示
+            document.getElementById('loading').style.display = 'none';
+            
+            // 开始渲染循环
+            animate();
+        }
+        
+        // 设置光照系统
+        function setupLighting() {
+            // 环境光
+            const ambientLight = new THREE.AmbientLight(0x404040, 0.5);
+            scene.add(ambientLight);
+            
+            // 方向光（太阳）
+            const sunLight = new THREE.DirectionalLight(0xffffff, 1);
+            sunLight.position.set(100, 200, 50);
+            sunLight.castShadow = true;
+            sunLight.shadow.camera.left = -500;
+            sunLight.shadow.camera.right = 500;
+            sunLight.shadow.camera.top = 500;
+            sunLight.shadow.camera.bottom = -500;
+            sunLight.shadow.camera.near = 0.5;
+            sunLight.shadow.camera.far = 1000;
+            sunLight.shadow.mapSize.width = 2048;
+            sunLight.shadow.mapSize.height = 2048;
+            scene.add(sunLight);
+            
+            // 存储太阳光引用
+            scene.sunLight = sunLight;
+        }
+        
+        // 创建天空盒
+        function createSkybox() {
+            const skyGeometry = new THREE.SphereGeometry(1500, 32, 32);
+            const skyMaterial = new THREE.ShaderMaterial({
+                uniforms: {
+                    topColor: { value: new THREE.Color(0x0077ff) },
+                    bottomColor: { value: new THREE.Color(0xffffff) },
+                    offset: { value: 33 },
+                    exponent: { value: 0.6 }
+                },
+                vertexShader: `
+                    varying vec3 vWorldPosition;
+                    void main() {
+                        vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+                        vWorldPosition = worldPosition.xyz;
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                    }
+                `,
+                fragmentShader: `
+                    uniform vec3 topColor;
+                    uniform vec3 bottomColor;
+                    uniform float offset;
+                    uniform float exponent;
+                    varying vec3 vWorldPosition;
+                    void main() {
+                        float h = normalize(vWorldPosition + offset).y;
+                        gl_FragColor = vec4(mix(bottomColor, topColor, max(pow(max(h, 0.0), exponent), 0.0)), 1.0);
+                    }
+                `,
+                side: THREE.BackSide
+            });
+            
+            const sky = new THREE.Mesh(skyGeometry, skyMaterial);
+            scene.add(sky);
+            scene.sky = sky;
+        }
+        
+        // 生成地形
+        function generateTerrain() {
+            const noise = new PerlinNoise(terrainParams.seed);
+            const geometry = new THREE.PlaneGeometry(
+                terrainParams.size,
+                terrainParams.size,
+                terrainParams.resolution - 1,
+                terrainParams.resolution - 1
+            );
+            
+            // 修改顶点高度
+            const vertices = geometry.attributes.position.array;
+            for (let i = 0; i < vertices.length; i += 3) {
+                const x = vertices[i];
+                const y = vertices[i + 1];
+                
+                // 生成高度值
+                let height = noise.octaveNoise(
+                    x * 0.01,
+                    y * 0.01,
+                    terrainParams.octaves,
+                    terrainParams.persistence,
+                    terrainParams.lacunarity
+                );
+                
+                // 添加更多细节
+                height += noise.octaveNoise(x * 0.05, y * 0.05, 4, 0.5, 2) * 0.2;
+                
+                // 应用高度缩放
+                vertices[i + 2] = height * terrainParams.heightScale;
+            }
+            
+            // 更新法线
+            geometry.computeVertexNormals();
+            
+            // 创建纹理材质
+            const material = new THREE.ShaderMaterial({
+                uniforms: {
+                    grassColor: { value: new THREE.Color(0x3a5f3a) },
+                    rockColor: { value: new THREE.Color(0x666666) },
+                    snowColor: { value: new THREE.Color(0xffffff) },
+                    sandColor: { value: new THREE.Color(0xc2b280) }
+                },
+                vertexShader: `
+                    varying vec3 vPosition;
+                    varying vec3 vNormal;
+                    varying float vHeight;
+                    
+                    void main() {
+                        vPosition = position;
+                        vNormal = normal;
+                        vHeight = position.z;
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                    }
+                `,
+                fragmentShader: `
+                    uniform vec3 grassColor;
+                    uniform vec3 rockColor;
+                    uniform vec3 snowColor;
+                    uniform vec3 sandColor;
+                    
+                    varying vec3 vPosition;
+                    varying vec3 vNormal;
+                    varying float vHeight;
+                    
+                    void main() {
+                        float slope = 1.0 - vNormal.z;
+                        vec3 color;
+                        
+                        // 基于高度和坡度的纹理混合
+                        if (vHeight < 5.0) {
+                            color = sandColor;
+                        } else if (vHeight < 20.0) {
+                            color = mix(sandColor, grassColor, (vHeight - 5.0) / 15.0);
+                        } else if (vHeight < 50.0) {
+                            color = grassColor;
+                        } else if (vHeight < 70.0) {
+                            color = mix(grassColor, rockColor, (vHeight - 50.0) / 20.0);
+                        } else {
+                            color = mix(rockColor, snowColor, (vHeight - 70.0) / 30.0);
+                        }
+                        
+                        // 陡坡使用岩石纹理
+                        if (slope > 0.5) {
+                            color = mix(color, rockColor, (slope - 0.5) * 2.0);
+                        }
+                        
+                        // 添加简单的光照
+                        vec3 lightDir = normalize(vec3(0.5, 0.5, 1.0));
+                        float light = max(dot(vNormal, lightDir), 0.0) * 0.5 + 0.5;
+                        
+                        gl_FragColor = vec4(color * light, 1.0);
+                    }
+                `,
+                side: THREE.DoubleSide
+            });
+            
+            // 如果已存在地形，先移除
+            if (terrain) {
+                scene.remove(terrain);
+            }
+            
+            // 创建地形网格
+            terrain = new THREE.Mesh(geometry, material);
+            terrain.rotation.x = -Math.PI / 2;
+            terrain.receiveShadow = true;
+            scene.add(terrain);
+            
+            // 更新相机位置到地形上方
+            const spawnHeight = getTerrainHeight(0, 0) + 10;
+            camera.position.set(0, spawnHeight, 0);
+        }
+        
+        // 创建水面
+        function createWater() {
+            const waterGeometry = new THREE.PlaneGeometry(terrainParams.size * 2, terrainParams.size * 2);
+            const waterMaterial = new THREE.MeshPhongMaterial({
+                color: 0x006994,
+                transparent: true,
+                opacity: 0.6,
+                shininess: 100
+            });
+            
+            water = new THREE.Mesh(waterGeometry, waterMaterial);
+            water.rotation.x = -Math.PI / 2;
+            water.position.y = 0;
+            scene.add(water);
+        }
+        
+        // 生成植被
+        function generateVegetation() {
+            // 清除现有植被
+            vegetation.forEach(obj => scene.remove(obj));
+            vegetation = [];
+            
+            const treeCount = Math.floor(environmentParams.vegetationDensity * 2);
+            const noise = new PerlinNoise(terrainParams.seed + 1000);
+            
+            for (let i = 0; i < treeCount; i++) {
+                // 随机位置
+                const x = (Math.random() - 0.5) * terrainParams.size * 0.8;
+                const z = (Math.random() - 0.5) * terrainParams.size * 0.8;
+                const y = getTerrainHeight(x, z);
+                
+                // 只在特定高度范围内生成树木
+                if (y > 10 && y < 50) {
+                    // 使用噪声来创建树林群落
+                    const density = noise.noise(x * 0.01, z * 0.01);
+                    if (density > 0.2) {
+                        const tree = createTree();
+                        tree.position.set(x, y, z);
+                        tree.scale.setScalar(0.8 + Math.random() * 0.4);
+                        tree.rotation.y = Math.random() * Math.PI * 2;
+                        scene.add(tree);
+                        vegetation.push(tree);
+                    }
+                }
+            }
+        }
+        
+        // 创建树木模型
+        function createTree() {
+            const tree = new THREE.Group();
+            
+            // 树干
+            const trunkGeometry = new THREE.CylinderGeometry(1, 1.5, 8, 8);
+            const trunkMaterial = new THREE.MeshPhongMaterial({ color: 0x8B4513 });
+            const trunk = new THREE.Mesh(trunkGeometry, trunkMaterial);
+            trunk.position.y = 4;
+            trunk.castShadow = true;
+            tree.add(trunk);
+            
+            // 树叶（多层）
+            const levels = 3;
+            for (let i = 0; i < levels; i++) {
+                const radius = 4 - i * 1.2;
+                const height = 4 - i * 1.5;
+                const foliageGeometry = new THREE.ConeGeometry(radius, height, 8);
+                const foliageMaterial = new THREE.MeshPhongMaterial({ color: 0x228B22 });
+                const foliage = new THREE.Mesh(foliageGeometry, foliageMaterial);
+                foliage.position.y = 8 + i * 2;
+                foliage.castShadow = true;
+                tree.add(foliage);
+            }
+            
+            return tree;
+        }
+        
+        // 获取地形高度
+        function getTerrainHeight(x, z) {
+            if (!terrain) return 0;
+            
+            const raycaster = new THREE.Raycaster();
+            raycaster.set(
+                new THREE.Vector3(x, 1000, z),
+                new THREE.Vector3(0, -1, 0)
+            );
+            
+            const intersects = raycaster.intersectObject(terrain);
+            if (intersects.length > 0) {
+                return intersects[0].point.y;
+            }
+            
+            return 0;
+        }
+        
+        // 设置控制系统
+        function setupControls() {
+            // 鼠标锁定
+            renderer.domElement.addEventListener('click', () => {
+                renderer.domElement.requestPointerLock();
+            });
+            
+            // 鼠标移动
+            document.addEventListener('mousemove', (event) => {
+                if (document.pointerLockElement === renderer.domElement) {
+                    const sensitivity = 0.002;
+                    camera.rotation.y -= event.movementX * sensitivity;
+                    camera.rotation.x -= event.movementY * sensitivity;
+                    camera.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, camera.rotation.x));
+                }
+            });
+            
+            // 键盘控制
+            document.addEventListener('keydown', (event) => {
+                switch(event.key.toLowerCase()) {
+                    case 'w': controls.forward = true; break;
+                    case 's': controls.backward = true; break;
+                    case 'a': controls.left = true; break;
+                    case 'd': controls.right = true; break;
+                    case ' ': controls.jump = true; break;
+                    case 'shift': controls.sprint = true; break;
+                }
+            });
+            
+            document.addEventListener('keyup', (event) => {
+                switch(event.key.toLowerCase()) {
+                    case 'w': controls.forward = false; break;
+                    case 's': controls.backward = false; break;
+                    case 'a': controls.left = false; break;
+                    case 'd': controls.right = false; break;
+                    case ' ': controls.jump = false; break;
+                    case 'shift': controls.sprint = false; break;
+                }
+            });
+            
+            // 窗口大小调整
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+        }
+        
+        // 设置UI控制
+        function setupUI() {
+            // 地形控制
+            document.getElementById('seed').addEventListener('change', (e) => {
+                terrainParams.seed = parseInt(e.target.value);
+            });
+            
+            document.getElementById('heightScale').addEventListener('input', (e) => {
+                terrainParams.heightScale = parseFloat(e.target.value);
+                document.getElementById('heightValue').textContent = e.target.value;
+            });
+            
+            document.getElementById('octaves').addEventListener('input', (e) => {
+                terrainParams.octaves = parseInt(e.target.value);
+                document.getElementById('octavesValue').textContent = e.target.value;
+            });
+            
+            document.getElementById('resolution').addEventListener('input', (e) => {
+                terrainParams.resolution = parseInt(e.target.value);
+                document.getElementById('resolutionValue').textContent = e.target.value;
+            });
+            
+            // 环境控制
+            document.getElementById('timeOfDay').addEventListener('input', (e) => {
+                environmentParams.timeOfDay = parseFloat(e.target.value);
+                const hours = Math.floor(environmentParams.timeOfDay);
+                const minutes = Math.floor((environmentParams.timeOfDay - hours) * 60);
+                document.getElementById('timeValue').textContent = 
+                    `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+                updateLighting();
+            });
+            
+            document.getElementById('fogDensity').addEventListener('input', (e) => {
+                environmentParams.fogDensity = parseFloat(e.target.value);
+                document.getElementById('fogValue').textContent = e.target.value;
+                scene.fog.density = environmentParams.fogDensity;
+            });
+            
+            document.getElementById('vegetationDensity').addEventListener('input', (e) => {
+                environmentParams.vegetationDensity = parseInt(e.target.value);
+                document.getElementById('vegetationValue').textContent = e.target.value;
+            });
+        }
+        
+        // 更新光照
+        function updateLighting() {
+            const time = environmentParams.timeOfDay;
+            const sunAngle = (time / 24) * Math.PI * 2 - Math.PI / 2;
+            
+            // 更新太阳位置
+            scene.sunLight.position.x = Math.cos(sunAngle) * 200;
+            scene.sunLight.position.y = Math.sin(sunAngle) * 200 + 100;
+            
+            // 调整光照强度和颜色
+            const intensity = Math.max(0, Math.sin(sunAngle));
+            scene.sunLight.intensity = intensity;
+            
+            // 日出日落颜色
+            let sunColor;
+            if (time >= 6 && time <= 18) {
+                sunColor = new THREE.Color(1, 1, 0.9);
+            } else if (time >= 5 && time < 6) {
+                sunColor = new THREE.Color(1, 0.7, 0.5);
+            } else if (time > 18 && time <= 19) {
+                sunColor = new THREE.Color(1, 0.6, 0.4);
+            } else {
+                sunColor = new THREE.Color(0.3, 0.3, 0.5);
+            }
+            scene.sunLight.color = sunColor;
+            
+            // 更新天空颜色
+            if (scene.sky) {
+                const topColor = time >= 6 && time <= 18 ? 
+                    new THREE.Color(0x0077ff) : new THREE.Color(0x000033);
+                const bottomColor = time >= 6 && time <= 18 ? 
+                    new THREE.Color(0xffffff) : new THREE.Color(0x000066);
+                
+                scene.sky.material.uniforms.topColor.value = topColor;
+                scene.sky.material.uniforms.bottomColor.value = bottomColor;
+            }
+            
+            // 更新雾的颜色
+            const fogColor = time >= 6 && time <= 18 ? 0x87CEEB : 0x000033;
+            scene.fog.color = new THREE.Color(fogColor);
+        }
+        
+        // 更新玩家位置
+        function updatePlayer(delta) {
+            const speed = controls.sprint ? 100 : 50;
+            const direction = new THREE.Vector3();
+            
+            // 计算移动方向
+            if (controls.forward) direction.z = -1;
+            if (controls.backward) direction.z = 1;
+            if (controls.left) direction.x = -1;
+            if (controls.right) direction.x = 1;
+            
+            if (direction.length() > 0) {
+                direction.normalize();
+                
+                // 应用相机旋转
+                direction.applyAxisAngle(new THREE.Vector3(0, 1, 0), camera.rotation.y);
+                
+                // 更新速度
+                velocity.x = direction.x * speed;
+                velocity.z = direction.z * speed;
+            } else {
+                velocity.x *= 0.9;
+                velocity.z *= 0.9;
+            }
+            
+            // 重力
+            velocity.y -= 9.8 * 10 * delta;
+            
+            // 跳跃
+            if (controls.jump && canJump) {
+                velocity.y = 100;
+                canJump = false;
+            }
+            
+            // 更新位置
+            const moveVector = velocity.clone().multiplyScalar(delta);
+            camera.position.add(moveVector);
+            
+            // 地形碰撞检测
+            const terrainHeight = getTerrainHeight(camera.position.x, camera.position.z) + 2;
+            if (camera.position.y < terrainHeight) {
+                camera.position.y = terrainHeight;
+                velocity.y = 0;
+                canJump = true;
+            }
+            
+            // 更新位置显示
+            document.getElementById('position').textContent = 
+                `位置: (${Math.floor(camera.position.x)}, ${Math.floor(camera.position.y)}, ${Math.floor(camera.position.z)})`;
+        }
+        
+        // 重新生成地形
+        function regenerateTerrain() {
+            generateTerrain();
+            generateVegetation();
+        }
+        
+        // 切换线框模式
+        function toggleWireframe() {
+            if (terrain && terrain.material) {
+                terrain.material.wireframe = !terrain.material.wireframe;
+            }
+        }
+        
+        // 导出地形数据
+        function exportTerrain() {
+            const data = {
+                params: terrainParams,
+                heightMap: []
+            };
+            
+            // 提取高度图数据
+            if (terrain) {
+                const vertices = terrain.geometry.attributes.position.array;
+                for (let i = 2; i < vertices.length; i += 3) {
+                    data.heightMap.push(vertices[i]);
+                }
+            }
+            
+            // 创建下载链接
+            const json = JSON.stringify(data, null, 2);
+            const blob = new Blob([json], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'terrain_data.json';
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+        
+        // 动画循环
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            const time = performance.now();
+            const delta = (time - prevTime) / 1000;
+            
+            // 更新玩家
+            updatePlayer(delta);
+            
+            // 更新FPS
+            stats.frameCount++;
+            if (time - stats.lastTime >= 1000) {
+                stats.fps = stats.frameCount;
+                stats.frameCount = 0;
+                stats.lastTime = time;
+                document.getElementById('fps').textContent = `FPS: ${stats.fps}`;
+            }
+            
+            // 渲染场景
+            renderer.render(scene, camera);
+            
+            prevTime = time;
+        }
+        
+        // 启动应用
+        init();
+    </script>
+</body>
+</html>
